@@ -4,6 +4,7 @@ Registers routers, configures CORS, manages MongoDB lifecycle,
 and starts the APScheduler background job on startup.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -34,25 +35,44 @@ async def lifespan(app: FastAPI):
 
     # ── Startup ───────────────────────────────────────────────────────────────
     logger.info("🔄 Connecting to MongoDB…")
-    await connect_to_mongo()
+
+    async def _connect_db():
+        try:
+            await connect_to_mongo()
+            logger.info("✅ MongoDB connected")
+        except Exception as e:
+            logger.warning(f"MongoDB connection failed: {e}")
+
+    asyncio.create_task(_connect_db())
 
     logger.info("⏰ Starting background scheduler…")
     _scheduler = create_scheduler()
     _scheduler.start()
 
-    # Run the pipeline immediately on first startup
-    logger.info("🚀 Running initial data pipeline on startup…")
-    try:
-        await run_pipeline()
-    except Exception as exc:
-        logger.warning(f"Initial pipeline run skipped or failed: {exc}")
+    # Run the pipeline in the background after a short delay so the server binds first
+    async def _run_pipeline_background():
+        await asyncio.sleep(30)  # Let server bind and Render health check pass
+        logger.info("🚀 Running initial data pipeline in background…")
+        try:
+            await run_pipeline()
+            logger.info("✅ Initial pipeline complete.")
+        except Exception as exc:
+            logger.warning(f"Initial pipeline run skipped or failed: {exc}")
+
+    asyncio.create_task(_run_pipeline_background())
 
     yield  # ── Application running ──────────────────────────────────────────
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    # Shutdown
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
-    await close_mongo_connection()
+
+    try:
+        await close_mongo_connection()
+    except Exception:
+        pass
+
     logger.info("👋 Server shutdown complete.")
 
 
