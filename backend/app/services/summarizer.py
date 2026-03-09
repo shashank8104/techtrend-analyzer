@@ -1,74 +1,84 @@
 """
 summarizer.py – Generates AI summaries for Reddit post discussions using
-a Hugging Face summarisation pipeline (default: facebook/bart-large-cnn).
+the HuggingFace Inference API (no local model loading — works on free hosting).
+Falls back gracefully if no API token is provided.
 """
 
 import logging
-from motor.motor_asyncio import AsyncIOMotorDatabase
-from transformers import pipeline
+import httpx
 from app.config import get_settings
 from app.utils.text_cleaning import clean_for_summary
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Lazy-loaded global pipeline
-_summarizer = None
+# HuggingFace Inference API endpoint
+HF_API_URL = f"https://api-inference.huggingface.co/models/{settings.hf_model}"
 
 
-def _get_pipeline():
-    """Load the Hugging Face summarisation pipeline (once)."""
-    global _summarizer
-    if _summarizer is None:
-        logger.info(f"Loading HuggingFace model '{settings.hf_model}' – this may take a while…")
-        _summarizer = pipeline(
-            "summarization",
-            model=settings.hf_model,
-            # Use CPU to avoid CUDA dependency issues; remove to use GPU if available
-            device=-1,
-        )
-        logger.info("✅ Summarisation model loaded.")
-    return _summarizer
+def _get_headers() -> dict:
+    """Return auth headers if HF_TOKEN is set, otherwise empty (rate-limited but works)."""
+    token = getattr(settings, "hf_token", "")
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
 
 
 def summarize_text(text: str) -> str:
     """
-    Run the summarisation pipeline on a text string.
-    Handles edge cases like very short inputs.
+    Call the HuggingFace Inference API to summarise text.
+    No local model is downloaded — runs entirely on HF servers.
     """
     if not text or len(text.split()) < 30:
         return "Not enough content to generate a summary."
 
-    pipe = _get_pipeline()
-    # BART accepts up to ~1024 tokens; we pre-truncate the input
-    max_input_chars = 3000
-    truncated = text[:max_input_chars]
+    # Truncate to 1024 chars to stay within model limits
+    payload = {
+        "inputs": text[:1024],
+        "parameters": {
+            "max_length": 130,
+            "min_length": 30,
+            "do_sample": False,
+        },
+        "options": {"wait_for_model": True},
+    }
 
-    result = pipe(
-        truncated,
-        max_length=130,
-        min_length=30,
-        do_sample=False,
-    )
-    return result[0]["summary_text"]
+    try:
+        response = httpx.post(
+            HF_API_URL,
+            json=payload,
+            headers=_get_headers(),
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        # Handle both list and dict responses
+        if isinstance(result, list) and result:
+            return result[0].get("summary_text", "Summary unavailable.")
+        if isinstance(result, dict) and "error" in result:
+            logger.warning(f"HF API error: {result['error']}")
+            return "Summary temporarily unavailable — model loading."
+        return "Summary unavailable."
+
+    except Exception as exc:
+        logger.error(f"Summarization failed: {exc}", exc_info=True)
+        return "Summary generation failed. Please try again later."
 
 
 async def summarize_post(post: dict) -> str:
-    """
-    Generate a summary for a single post document.
-    Combines title + comments as the input corpus.
-    """
+    """Generate a summary for a single post document."""
     title = post.get("title", "")
     comments = post.get("comments", [])
     corpus = clean_for_summary([title] + comments)
     return summarize_text(corpus)
 
 
-async def summarize_all_posts(db: AsyncIOMotorDatabase, batch_size: int = 20) -> int:
+async def summarize_all_posts(db: AsyncIOMotorDatabase, batch_size: int = 10) -> int:
     """
-    Iterate over posts that have no summary yet and generate summaries.
-    Processes `batch_size` posts per scheduler run to avoid timeout.
-    Returns the number of posts summarised.
+    Summarise posts that have no summary yet, in batches.
+    Uses HF Inference API — no local GPU/RAM needed.
     """
     posts_col = db["posts"]
     cursor = posts_col.find({"summary": ""}).limit(batch_size)
@@ -83,9 +93,9 @@ async def summarize_all_posts(db: AsyncIOMotorDatabase, batch_size: int = 20) ->
                 {"$set": {"summary": summary}},
             )
             count += 1
-            logger.info(f"  Summarised post: {post.get('title', '')[:60]}…")
+            logger.info(f"  Summarised: {post.get('title', '')[:60]}…")
         except Exception as exc:
-            logger.error(f"  Failed to summarise post {post.get('_id')}: {exc}", exc_info=True)
+            logger.error(f"  Failed: {exc}", exc_info=True)
 
     logger.info(f"✅ Summarised {count} posts.")
     return count

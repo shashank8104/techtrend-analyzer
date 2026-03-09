@@ -18,6 +18,9 @@ class Settings(BaseSettings):
 
     # Hugging Face model for summarization
     hf_model: str = "facebook/bart-large-cnn"
+    # Optional HF API token for higher rate limits on Inference API
+    hf_token: str = ""
+
 
     # CORS
     frontend_url: str = "http://localhost:3000"

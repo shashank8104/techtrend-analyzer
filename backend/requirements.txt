@@ -12,19 +12,17 @@ motor>=3.4.0
 # Background scheduler
 apscheduler>=3.10.0
 
-# NLP / AI
-# PyTorch CPU-only build (works on Python 3.11–3.13)
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.2.0
-transformers>=4.40.0
+# NLP / Trend Detection (lightweight — no torch needed)
 keybert>=0.8.0
+sentence-transformers>=2.7.0
 rake-nltk>=1.0.6
 scikit-learn>=1.4.0
 nltk>=3.8.0
-sentence-transformers>=2.7.0
+
+# HTTP client (for HuggingFace Inference API)
+httpx>=0.27.0
 
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
-httpx>=0.27.0
