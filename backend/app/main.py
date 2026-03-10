@@ -35,15 +35,14 @@ async def lifespan(app: FastAPI):
 
     # ── Startup ───────────────────────────────────────────────────────────────
     logger.info("🔄 Connecting to MongoDB…")
-
-    async def _connect_db():
-        try:
-            await connect_to_mongo()
-            logger.info("✅ MongoDB connected")
-        except Exception as e:
-            logger.warning(f"MongoDB connection failed: {e}")
-
-    asyncio.create_task(_connect_db())
+    try:
+        await asyncio.wait_for(connect_to_mongo(), timeout=15)
+        logger.info("✅ MongoDB connected")
+    except asyncio.TimeoutError:
+        logger.warning("MongoDB connection timed out after 15s – retrying in background")
+        asyncio.create_task(connect_to_mongo())
+    except Exception as e:
+        logger.warning(f"MongoDB connection failed (app will start): {e}")
 
     logger.info("⏰ Starting background scheduler…")
     _scheduler = create_scheduler()
